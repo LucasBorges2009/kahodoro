@@ -411,13 +411,13 @@
    (Console Firebase → Configurações do projeto → Seus apps → Config)
    ============================================================ */
 const firebaseConfig = {
-  apiKey: "COLE_AQUI_SUA_API_KEY",
-  authDomain: "SEU_PROJETO.firebaseapp.com",
-  databaseURL: "https://SEU_PROJETO-default-rtdb.firebaseio.com",
-  projectId: "SEU_PROJETO",
-  storageBucket: "SEU_PROJETO.appspot.com",
-  messagingSenderId: "000000000000",
-  appId: "1:000000000000:web:xxxxxxxxxxxxxxxxxx"
+  apiKey: "AIzaSyDicRH4GYm2SS3uIc6Cu9FoDC_t-9jVW-c",
+  authDomain: "kahodoro.firebaseapp.com",
+  databaseURL: "https://kahodoro-default-rtdb.firebaseio.com",
+  projectId: "kahodoro",
+  storageBucket: "kahodoro.firebasestorage.app",
+  messagingSenderId: "673001546396",
+  appId: "1:673001546396:web:1c040f160315d294444359"
 };
 firebase.initializeApp(firebaseConfig);
 const db = firebase.database();
@@ -466,30 +466,41 @@ function genId(){ return 'p_'+Math.random().toString(36).slice(2,10); }
 function storageOK(){ return typeof db !== 'undefined' && !!db; }
 
 async function sGet(path){
-  // Usando localStorage para teste local (sem Firebase)
-  const data = localStorage.getItem(path);
-  return data ? JSON.parse(data) : null;
+  if(!storageOK()) return null;
+  try{ 
+    const snap = await db.ref(path).once('value'); 
+    return snap.exists() ? snap.val() : null; 
+  }
+  catch(e){ 
+    console.error('sGet falha em:', path, e); 
+    return null; 
+  }
 }
 async function sSet(path, value){
-  // Usando localStorage para teste local (sem Firebase)
+  if(!storageOK()) { 
+    console.error('sSet: Firebase não está inicializado!');
+    toast('Banco de dados indisponível — confira a configuração do Firebase no início do arquivo.'); 
+    return false; 
+  }
   try{ 
-    localStorage.setItem(path, JSON.stringify(value)); 
-    console.log('localStorage: salvo em', path);
+    console.log('sSet salvando em:', path);
+    await db.ref(path).set(value); 
+    console.log('sSet sucesso em:', path);
     return true; 
   }
   catch(e){ 
-    console.error('localStorage falha:', path, e);
-    toast('Falha ao salvar: ' + e.message); 
+    console.error('sSet falha:', path, e);
+    toast('Falha ao salvar dados da sala: ' + e.message); 
     return false; 
   }
 }
 async function sList(prefix){
-  const keys = [];
-  for(let i=0; i<localStorage.length; i++){
-    const key = localStorage.key(i);
-    if(key?.startsWith(prefix)) keys.push(key);
-  }
-  return keys;
+  if(!storageOK()) return [];
+  try{
+    const snap = await db.ref(prefix).once('value');
+    if(!snap.exists()) return [];
+    return Object.keys(snap.val()).map(k => `${prefix}/${k}`);
+  }catch(e){ return []; }
 }
 
 const roomKey = code => `rooms/${code}/state`;
@@ -986,10 +997,9 @@ function startFocusCycle(){
 
 /* init */
 console.log('🔥 Kahodoro iniciando…');
-console.log('Modo: localStorage (teste local, sem Firebase)');
-console.log('Para multiplayer entre dispositivos, configure Firebase no início do arquivo.');
+console.log('Firebase inicializado?', storageOK());
 if(!storageOK()){
-  console.log('Firebase não está ativo, usando localStorage...');
+  toast('Aviso: configure o Firebase no início do arquivo para o multiplayer funcionar.', 5000);
 }
 (function initFromInviteLink(){
   const params = new URLSearchParams(window.location.search);
