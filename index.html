@@ -111,6 +111,23 @@
   .player-chip .dot{width:7px; height:7px; border-radius:50%; background:var(--success);}
   .player-count{font-family:var(--font-mono); color:var(--gold); font-size:14px;}
 
+  .player-panel{min-height:110px; max-height:320px; overflow-y:auto; padding-right:2px;}
+  .player-chip-host{position:relative; padding-right:28px; font-size:14px; padding-top:8px; padding-bottom:8px;}
+  .kick-btn{
+    display:none; position:absolute; top:50%; right:6px; transform:translateY(-50%);
+    width:18px; height:18px; border-radius:50%; border:none; background:var(--error); color:#fff;
+    font-size:12px; line-height:1; cursor:pointer; align-items:center; justify-content:center; padding:0;
+  }
+  .player-chip-host:hover .kick-btn{display:flex;}
+
+  .conn-status{
+    position:fixed; top:14px; right:16px; display:inline-flex; align-items:center; gap:6px;
+    font-family:var(--font-mono); font-size:11px; color:var(--text-dim); background:var(--surface);
+    border:1px solid var(--border); border-radius:999px; padding:6px 12px; z-index:60;
+  }
+  .conn-dot{width:7px; height:7px; border-radius:50%; background:var(--error); transition:background .2s ease;}
+  .conn-dot.ok{background:var(--success);}
+
   /* avatar picker */
   .avatar-grid{display:flex; flex-wrap:wrap; gap:8px; margin-bottom:14px;}
   .avatar-btn{
@@ -175,6 +192,8 @@
   .lead-rank{font-family:var(--font-mono); color:var(--text-dim); width:22px; flex-shrink:0;}
   .lead-name{flex:1; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
   .lead-score{font-family:var(--font-mono); color:var(--gold); font-weight:700;}
+  .lead-countdown{font-family:var(--font-mono); color:var(--break); font-weight:700; font-size:15px;}
+  .lead-countdown.done{color:var(--text-dim);}
   .podium-1 .lead-rank{color:var(--gold);}
   .podium-2 .lead-rank{color:#c7c9e6;}
   .podium-3 .lead-rank{color:#d68a52;}
@@ -201,6 +220,7 @@
 </style>
 </head>
 <body>
+<div class="conn-status" id="connStatus"><span class="conn-dot" id="connDot"></span><span id="connText">conectando…</span></div>
 <div id="app">
 
   <!-- HOME -->
@@ -270,7 +290,7 @@
         <h3 style="margin:0">Jogadores</h3>
         <span class="player-count" id="lobbyCount">0</span>
       </div>
-      <div id="lobbyPlayers"><span class="note">Ninguém entrou ainda…</span></div>
+      <div id="lobbyPlayers" class="player-panel"><span class="note">Ninguém entrou ainda…</span></div>
     </div>
 
     <button class="btn btn-primary" id="startBtn" onclick="hostStartGame()" disabled>Aguardando jogadores…</button>
@@ -312,6 +332,7 @@
     <span class="eyebrow">quiz encerrado</span>
     <h2>Resultado final</h2>
     <div class="card" id="hostFinalLeaderboard"></div>
+    <div class="card" id="hostBreakControls"></div>
     <button class="btn btn-outline" onclick="location.reload()">Encerrar e voltar ao início</button>
   </div>
 
@@ -344,6 +365,9 @@
     <div class="card">
       <div class="row between" style="margin-bottom:10px"><h3 style="margin:0">Quem está na sala</h3><span class="player-count" id="pLobbyCount">0</span></div>
       <div id="pLobbyPlayers"></div>
+    </div>
+    <div class="row" style="justify-content:center;">
+      <button class="link-btn" onclick="leaveRoom()">Sair da sala</button>
     </div>
   </div>
 
@@ -390,7 +414,8 @@
         <svg viewBox="0 0 120 120"><circle class="ring-bg" cx="60" cy="60" r="52"></circle><circle class="ring-fg is-break" id="breakRing" cx="60" cy="60" r="52"></circle></svg>
         <div class="ring-center"><span class="ring-time" id="breakTime">00:00</span><span class="ring-label">pausa</span></div>
       </div>
-      <button class="btn btn-break" id="breakStartBtn" onclick="startBreak()">Iniciar meu tempo livre 🎉</button>
+      <p class="note" id="breakWaitMsg" style="margin-top:8px;">Aguardando o anfitrião iniciar o tempo livre da turma…</p>
+      <button class="btn btn-break" id="breakStartBtn" style="display:none;">Tempo livre</button>
     </div>
 
     <div class="card">
@@ -413,7 +438,7 @@
 const firebaseConfig = {
   apiKey: "AIzaSyDicRH4GYm2SS3uIc6Cu9FoDC_t-9jVW-c",
   authDomain: "kahodoro.firebaseapp.com",
-  databaseURL: "https://kahodoro-default-rtdb.firebaseio.com",
+  databaseURL: "COLE_AQUI_A_DATABASE_URL",
   projectId: "kahodoro",
   storageBucket: "kahodoro.firebasestorage.app",
   messagingSenderId: "673001546396",
@@ -441,9 +466,9 @@ const defaultQuestions = () => ([
 let S = {
   role:null, roomCode:null, playerId:null, playerName:null,
   localQuestions: defaultQuestions(),
-  pollTimer:null, tickTimer:null,
-  lastPhase:null, lastIndex:-1,
-  myPlayer:null,
+  pollTimer:null, tickTimer:null, hostBreakTicker:null,
+  lastPhase:null, lastIndex:-1, currentIndex:-1,
+  myPlayer:null, isJoining:false, breakStartedNotifiedFor:null,
   breakConfig:{maxMinutes:30},
   breakTimer:null, breakTotalSec:0, breakRemainingSec:0,
 };
@@ -467,32 +492,13 @@ function storageOK(){ return typeof db !== 'undefined' && !!db; }
 
 async function sGet(path){
   if(!storageOK()) return null;
-  try{ 
-    const snap = await db.ref(path).once('value'); 
-    return snap.exists() ? snap.val() : null; 
-  }
-  catch(e){ 
-    console.error('sGet falha em:', path, e); 
-    return null; 
-  }
+  try{ const snap = await db.ref(path).once('value'); return snap.exists() ? snap.val() : null; }
+  catch(e){ console.error(e); return null; }
 }
 async function sSet(path, value){
-  if(!storageOK()) { 
-    console.error('sSet: Firebase não está inicializado!');
-    toast('Banco de dados indisponível — confira a configuração do Firebase no início do arquivo.'); 
-    return false; 
-  }
-  try{ 
-    console.log('sSet salvando em:', path);
-    await db.ref(path).set(value); 
-    console.log('sSet sucesso em:', path);
-    return true; 
-  }
-  catch(e){ 
-    console.error('sSet falha:', path, e);
-    toast('Falha ao salvar dados da sala: ' + e.message); 
-    return false; 
-  }
+  if(!storageOK()) { toast('Banco de dados indisponível — confira a configuração do Firebase no início do arquivo.'); return false; }
+  try{ await db.ref(path).set(value); return true; }
+  catch(e){ console.error(e); toast('Falha ao salvar dados da sala. Tentando de novo…'); return false; }
 }
 async function sList(prefix){
   if(!storageOK()) return [];
@@ -501,6 +507,26 @@ async function sList(prefix){
     if(!snap.exists()) return [];
     return Object.keys(snap.val()).map(k => `${prefix}/${k}`);
   }catch(e){ return []; }
+}
+async function sDelete(path){
+  if(!storageOK()) return false;
+  try{ await db.ref(path).remove(); return true; }
+  catch(e){ console.error(e); return false; }
+}
+
+/* connection status — gates the home screen until Firebase is actually reachable */
+if(storageOK()){
+  db.ref('.info/connected').on('value', snap => {
+    const connected = snap.val() === true;
+    const dot = document.getElementById('connDot');
+    const text = document.getElementById('connText');
+    if(dot) dot.classList.toggle('ok', connected);
+    if(text) text.textContent = connected ? 'conectado' : 'conectando…';
+    document.querySelectorAll('#screen-home .card-hover').forEach(el=>{
+      el.style.pointerEvents = connected ? '' : 'none';
+      el.style.opacity = connected ? '' : '.5';
+    });
+  });
 }
 
 const roomKey = code => `rooms/${code}/state`;
@@ -580,44 +606,25 @@ async function createRoom(){
   const errBox = document.getElementById('hostSetupError');
   if(err){ errBox.textContent = err; return; }
   errBox.textContent = '';
-  if(!storageOK()){ 
-    errBox.textContent = '❌ Firebase não está configurado. Adicione suas credenciais no início do arquivo (procure por "COLE_AQUI_SUA_API_KEY").';
-    console.error('Firebase não inicializado. db =', db);
-    return; 
-  }
+  if(!storageOK()){ toast('Configure o Firebase no início do arquivo antes de usar salas multiplayer.'); return; }
 
-  errBox.textContent = '⏳ Criando sala…';
   let code, exists;
-  try {
-    do { code = genCode(); exists = await sGet(roomKey(code)); } while(exists);
-  } catch(e) {
-    errBox.textContent = '❌ Erro ao acessar Firebase: ' + e.message;
-    console.error('Erro ao gerar código:', e);
-    return;
-  }
+  do { code = genCode(); exists = await sGet(roomKey(code)); } while(exists);
 
   S.roomCode = code;
   S.role = 'host';
   S.breakConfig = {maxMinutes: parseInt(document.getElementById('breakMax').value || 30)};
 
-  const hostName = document.getElementById('hostName').value.trim() || 'Anfitrião';
-  console.log('Criando sala:', {code, hostName, totalQuestions: S.localQuestions.length});
-
   const room = {
-    code, hostName,
+    code, hostName: document.getElementById('hostName').value.trim() || 'Anfitrião',
     phase:'lobby', currentIndex:-1, questionStartedAt:null,
     questions: S.localQuestions, breakConfig: S.breakConfig, createdAt: Date.now(),
   };
   const ok = await sSet(roomKey(code), room);
-  if(!ok) {
-    errBox.textContent = '❌ Falha ao salvar sala no banco de dados.';
-    console.error('sSet falhou para código:', code);
-    return;
-  }
-  console.log('Sala criada com sucesso! Código:', code);
+  if(!ok) return;
   document.getElementById('lobbyCode').textContent = code;
   screen('screen-host-lobby');
-  startHostLobbyPoll();
+  startHostPlayersRealtime();
 }
 function copyCode(){
   navigator.clipboard?.writeText(S.roomCode).then(()=>toast('Código copiado: '+S.roomCode)).catch(()=>toast('Código: '+S.roomCode));
@@ -632,32 +639,62 @@ function copyInviteLink(){
   navigator.clipboard?.writeText(url).then(()=>toast('Link copiado! Cole e mande pra galera.')).catch(()=>toast('Link: '+url));
 }
 
-/* ---------------- HOST: LOBBY ---------------- */
-function startHostLobbyPoll(){
-  clearInterval(S.pollTimer);
-  refreshLobby();
-  S.pollTimer = setInterval(refreshLobby, 2000);
+/* ---------------- HOST: LOBBY & LIVE PLAYER LIST ---------------- */
+let hostPlayersRef = null;
+function detachHostPlayersListener(){
+  if(hostPlayersRef){ hostPlayersRef.off(); hostPlayersRef = null; }
 }
-async function refreshLobby(){
-  const players = await getAllPlayers(S.roomCode);
-  document.getElementById('lobbyCount').textContent = players.length;
+function startHostPlayersRealtime(){
+  detachHostPlayersListener();
+  hostPlayersRef = db.ref(playerKeyPrefix(S.roomCode));
+  hostPlayersRef.on('value', snap => {
+    const players = snap.exists() ? Object.values(snap.val()) : [];
+    renderLobbyPlayers(players);
+    updateAnsweredCount(players);
+  });
+}
+function renderLobbyPlayers(players){
+  const countEl = document.getElementById('lobbyCount');
+  const btn = document.getElementById('startBtn');
+  if(!countEl || !btn) return;
+  countEl.textContent = players.length;
   const box = document.getElementById('lobbyPlayers');
   box.innerHTML = players.length
-    ? players.map(p=>`<span class="player-chip"><span class="dot"></span>${p.avatar||''} ${escapeHtml(p.name)}</span>`).join('')
+    ? players.map(p=>`<span class="player-chip player-chip-host"><span class="dot"></span>${p.avatar||''} ${escapeHtml(p.name)}<button class="kick-btn" data-pid="${p.id}" data-name="${escapeAttr(p.name)}" title="Remover jogador">×</button></span>`).join('')
     : '<span class="note">Ninguém entrou ainda…</span>';
-  const btn = document.getElementById('startBtn');
   btn.disabled = players.length===0;
   btn.textContent = players.length===0 ? 'Aguardando jogadores…' : `Iniciar quiz com ${players.length} jogador(es) →`;
+}
+function updateAnsweredCount(players){
+  const el = document.getElementById('hostAnsweredCount');
+  if(!el || S.currentIndex==null || S.currentIndex<0) return;
+  const answered = players.filter(p => p.answers && p.answers[S.currentIndex]).length;
+  el.textContent = `${answered}/${players.length} responderam`;
+}
+document.getElementById('lobbyPlayers').addEventListener('click', e=>{
+  const btn = e.target.closest('.kick-btn');
+  if(!btn) return;
+  kickPlayer(btn.dataset.pid, btn.dataset.name);
+});
+async function kickPlayer(pid, name){
+  const sure = confirm(`Remover "${name}" da sala?\n\nEssa pessoa vai sair da sala e não vai conseguir voltar a entrar usando esse mesmo nome.`);
+  if(!sure) return;
+  await sDelete(playerKey(S.roomCode, pid));
+  const room = await sGet(roomKey(S.roomCode));
+  if(room){
+    room.bannedNames = room.bannedNames || [];
+    const norm = name.trim().toLowerCase();
+    if(!room.bannedNames.includes(norm)) room.bannedNames.push(norm);
+    await sSet(roomKey(S.roomCode), room);
+  }
+  toast(`${name} foi removido(a) da sala.`);
 }
 function escapeHtml(s){ const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
 
 async function hostStartGame(){
-  clearInterval(S.pollTimer);
   const room = await sGet(roomKey(S.roomCode));
-  if(!room){ toast('Erro ao carregar sala. Tente de novo.'); return; }
   room.phase = 'question'; room.currentIndex = 0; room.questionStartedAt = Date.now();
-  const ok = await sSet(roomKey(S.roomCode), room);
-  if(!ok) return;
+  await sSet(roomKey(S.roomCode), room);
   screen('screen-host-question');
   runHostQuestion(room);
 }
@@ -671,16 +708,16 @@ function setRing(el, fraction, warn){
 }
 
 function runHostQuestion(room){
+  S.currentIndex = room.currentIndex;
   const q = room.questions[room.currentIndex];
   document.getElementById('hostQIndex').textContent = `Pergunta ${room.currentIndex+1}/${room.questions.length}`;
   document.getElementById('hostQText').textContent = q.text;
   document.getElementById('hostQOptions').innerHTML = q.options.map((o,i)=>
-    `<div style="margin-bottom:4px;">${OPT_SHAPES[i]} ${escapeHtml(o)} ${i===q.correct?'<span style="color:var(--success)">(correta)</span>':''}</div>`
+    `<div style="margin-bottom:4px;">${OPT_SHAPES[i]} ${escapeHtml(o)}</div>`
   ).join('');
   document.getElementById('hostRevealBtn').disabled = false;
 
   clearInterval(S.tickTimer);
-  clearInterval(S.pollTimer);
   const durMs = q.time*1000;
   const ring = document.getElementById('hostRingTime');
   const ringEl = document.getElementById('hostRing');
@@ -694,18 +731,10 @@ function runHostQuestion(room){
   };
   tick();
   S.tickTimer = setInterval(tick, 200);
-
-  const pollAnswered = async () => {
-    const players = await getAllPlayers(S.roomCode);
-    const answered = players.filter(p => p.answers && p.answers[room.currentIndex]).length;
-    document.getElementById('hostAnsweredCount').textContent = `${answered}/${players.length} responderam`;
-  };
-  pollAnswered();
-  S.pollTimer = setInterval(pollAnswered, 1500);
 }
 
 async function hostReveal(){
-  clearInterval(S.tickTimer); clearInterval(S.pollTimer);
+  clearInterval(S.tickTimer);
   document.getElementById('hostRevealBtn').disabled = true;
   const room = await sGet(roomKey(S.roomCode));
   if(room.phase==='reveal') { renderHostReveal(room); return; }
@@ -755,91 +784,168 @@ function minutesEarned(cfg, correctCount, total){
   if(!total) return 0;
   return Math.round(cfg.maxMinutes * (correctCount/total));
 }
-function renderMinutesLeaderboardHTML(players, total, cfg){
+function remainingForPlayer(startedAt, totalMinutes){
+  const totalSec = totalMinutes*60;
+  if(!startedAt) return totalSec;
+  const elapsed = Math.floor((Date.now()-startedAt)/1000);
+  return Math.max(0, totalSec-elapsed);
+}
+function renderMinutesLeaderboardHTML(players, total, cfg, breakStartedAt){
   const ranked = [...players].sort((a,b)=> minutesEarned(cfg,b.correctCount,total) - minutesEarned(cfg,a.correctCount,total) || b.score-a.score);
   if(!ranked.length) return '<span class="note">Sem jogadores.</span>';
   return ranked.map((p,i)=>{
     const mins = minutesEarned(cfg, p.correctCount, total);
     const cls = i===0?'podium-1':i===1?'podium-2':i===2?'podium-3':'';
-    return `<div class="lead-row ${cls}"><span class="lead-rank">${i+1}</span><span class="lead-name">${p.avatar||''} ${escapeHtml(p.name)} <span class="note" style="margin:0;">· ${p.correctCount}/${total} acertos</span></span><span class="lead-score">${mins} min</span></div>`;
+    const scoreCell = breakStartedAt
+      ? `<span class="lead-countdown${remainingForPlayer(breakStartedAt,mins)<=0?' done':''}" data-countdown-pid="${p.id}" data-minutes="${mins}">${fmtTime(remainingForPlayer(breakStartedAt, mins))}</span>`
+      : `<span class="lead-score">${mins} min</span>`;
+    return `<div class="lead-row ${cls}"><span class="lead-rank">${i+1}</span><span class="lead-name">${p.avatar||''} ${escapeHtml(p.name)} <span class="note" style="margin:0;">· ${p.correctCount}/${total} acertos</span></span>${scoreCell}</div>`;
   }).join('');
 }
 async function renderHostFinal(room){
+  detachHostPlayersListener();
   const players = await getAllPlayers(S.roomCode);
-  const total = room.questions.length;
-  const el = document.getElementById('hostFinalLeaderboard');
-  el.innerHTML = '<h3>Ranking · tempo livre conquistado</h3>' + renderMinutesLeaderboardHTML(players, total, room.breakConfig);
+  S.finalPlayers = players; S.finalTotal = room.questions.length; S.finalCfg = room.breakConfig; S.finalRoom = room;
+  renderHostFinalUI();
   screen('screen-host-final');
+}
+function renderHostFinalUI(){
+  const players = S.finalPlayers, total = S.finalTotal, cfg = S.finalCfg, room = S.finalRoom;
+  const el = document.getElementById('hostFinalLeaderboard');
+  el.innerHTML = '<h3>Ranking · tempo livre conquistado</h3>' + renderMinutesLeaderboardHTML(players, total, cfg, room.breakStartedAt);
+  const ctrl = document.getElementById('hostBreakControls');
+  if(room.breakStartedAt){
+    const when = new Date(room.breakStartedAt).toLocaleTimeString('pt-BR', {hour:'2-digit', minute:'2-digit'});
+    ctrl.innerHTML = `<p class="note" style="text-align:center; margin:0;">🎉 Tempo livre iniciado às ${when} — deixe essa tela projetada pra turma acompanhar.</p>`;
+    startHostBreakTicker();
+  } else {
+    ctrl.innerHTML = `<button class="btn btn-break" onclick="hostStartAllBreaks()">Iniciar tempo livre de todo mundo 🎉</button><p class="note" style="text-align:center; margin:10px 0 0;">Cada jogador começa a contar a partir do minuto que ele mesmo ganhou.</p>`;
+    clearInterval(S.hostBreakTicker);
+  }
+}
+function startHostBreakTicker(){
+  clearInterval(S.hostBreakTicker);
+  S.hostBreakTicker = setInterval(()=>{
+    document.querySelectorAll('[data-countdown-pid]').forEach(el=>{
+      const mins = parseFloat(el.dataset.minutes);
+      const remain = remainingForPlayer(S.finalRoom.breakStartedAt, mins);
+      el.textContent = fmtTime(remain);
+      el.classList.toggle('done', remain<=0);
+    });
+  }, 1000);
+}
+async function hostStartAllBreaks(){
+  const room = await sGet(roomKey(S.roomCode));
+  if(!room) return;
+  room.breakStartedAt = Date.now();
+  await sSet(roomKey(S.roomCode), room);
+  S.finalRoom = room;
+  renderHostFinalUI();
 }
 
 /* ---------------- PLAYER: JOIN ---------------- */
 async function playerJoin(){
+  if(S.isJoining) return;
+  S.isJoining = true;
+  const submitBtn = document.querySelector('#screen-join .btn-primary');
+  if(submitBtn){ submitBtn.disabled = true; submitBtn.textContent = 'Entrando…'; }
   const errBox = document.getElementById('joinError');
-  const code = document.getElementById('joinCode').value.trim();
-  const name = document.getElementById('joinName').value.trim();
-  errBox.textContent = '';
-  if(!/^\d{4}$/.test(code)){ errBox.textContent = 'Digite o código de 4 dígitos da sala.'; return; }
-  if(!name){ errBox.textContent = 'Digite seu nome.'; return; }
-  if(!storageOK()){ errBox.textContent = 'O jogo não está conectado ao banco de dados (confira a configuração do Firebase).'; return; }
+  try{
+    const code = document.getElementById('joinCode').value.trim();
+    const name = document.getElementById('joinName').value.trim();
+    errBox.textContent = '';
+    if(!/^\d{4}$/.test(code)){ errBox.textContent = 'Digite o código de 4 dígitos da sala.'; return; }
+    if(!name){ errBox.textContent = 'Digite seu nome.'; return; }
+    if(!storageOK()){ errBox.textContent = 'O jogo não está conectado ao banco de dados (confira a configuração do Firebase).'; return; }
 
-  const room = await sGet(roomKey(code));
-  if(!room){ errBox.textContent = 'Sala não encontrada. Confira o código com o anfitrião.'; return; }
+    const room = await sGet(roomKey(code));
+    if(!room){ errBox.textContent = 'Sala não encontrada. Confira o código com o anfitrião.'; return; }
 
-  S.roomCode = code; S.role = 'player'; S.playerId = genId(); S.playerName = name;
-  S.myPlayer = {id:S.playerId, name, avatar:selectedAvatar, score:0, correctCount:0, answers:{}, scoredIndices:[], joinedAt:Date.now()};
-  const ok = await sSet(playerKey(code, S.playerId), S.myPlayer);
-  if(!ok){ errBox.textContent = 'Não deu para entrar agora, tente de novo.'; return; }
+    const normName = name.toLowerCase();
+    if((room.bannedNames||[]).includes(normName)){
+      errBox.textContent = 'Esse nome foi removido dessa sala pelo anfitrião. Tente com outro nome.';
+      return;
+    }
+    const existingPlayers = await getAllPlayers(code);
+    if(existingPlayers.some(p => p.name.trim().toLowerCase() === normName)){
+      errBox.textContent = 'Já tem alguém nessa sala com esse nome. Escolha outro nome.';
+      return;
+    }
 
-  document.getElementById('pLobbyCode').textContent = code;
-  screen('screen-player-lobby');
-  startPlayerPoll();
+    S.roomCode = code; S.role = 'player'; S.playerId = genId(); S.playerName = name;
+    S.myPlayer = {id:S.playerId, name, avatar:selectedAvatar, score:0, correctCount:0, answers:{}, scoredIndices:[], joinedAt:Date.now()};
+    const ok = await sSet(playerKey(code, S.playerId), S.myPlayer);
+    if(!ok){ errBox.textContent = 'Não deu para entrar agora, tente de novo.'; return; }
+    db.ref(playerKey(code, S.playerId)).onDisconnect().remove();
+
+    document.getElementById('pLobbyCode').textContent = code;
+    screen('screen-player-lobby');
+    startPlayerRealtime();
+  } finally {
+    S.isJoining = false;
+    if(submitBtn){ submitBtn.disabled = false; submitBtn.textContent = 'Entrar →'; }
+  }
 }
 
-/* ---------------- PLAYER: POLL LOOP ---------------- */
-function startPlayerPoll(){
-  clearInterval(S.pollTimer);
-  playerPollTick();
-  S.pollTimer = setInterval(playerPollTick, 1300);
+/* ---------------- PLAYER: REALTIME SYNC ---------------- */
+let playerRoomRef = null, playerListRef = null;
+function detachPlayerListeners(){
+  if(playerRoomRef){ playerRoomRef.off(); playerRoomRef = null; }
+  if(playerListRef){ playerListRef.off(); playerListRef = null; }
 }
-async function playerPollTick(){
-  const room = await sGet(roomKey(S.roomCode));
-  if(!room) return;
-
-  if(room.phase==='lobby'){
-    const players = await getAllPlayers(S.roomCode);
+function startPlayerRealtime(){
+  detachPlayerListeners();
+  playerRoomRef = db.ref(roomKey(S.roomCode));
+  playerRoomRef.on('value', snap => {
+    const room = snap.exists() ? snap.val() : null;
+    if(room) handleRoomUpdateForPlayer(room);
+  });
+  playerListRef = db.ref(playerKeyPrefix(S.roomCode));
+  playerListRef.on('value', snap => {
+    if(S.lastPhase!=='lobby') return;
+    const players = snap.exists() ? Object.values(snap.val()) : [];
     document.getElementById('pLobbyCount').textContent = players.length;
     document.getElementById('pLobbyPlayers').innerHTML = players.map(p=>`<span class="player-chip"><span class="dot"></span>${p.avatar||''} ${escapeHtml(p.name)}${p.id===S.playerId?' (você)':''}</span>`).join('');
-    S.lastPhase='lobby';
+  });
+}
+function handleRoomUpdateForPlayer(room){
+  S.currentRoom = room;
+  if(room.phase==='lobby'){
+    S.lastPhase = 'lobby';
     return;
   }
-
   if(room.phase==='question'){
     if(S.lastPhase!=='question' || room.currentIndex!==S.lastIndex){
-      S.lastIndex = room.currentIndex; S.lastPhase='question';
+      S.lastIndex = room.currentIndex; S.lastPhase = 'question';
       renderPlayerQuestion(room);
-    } else {
-      tickPlayerRing(room);
     }
     return;
   }
-
   if(room.phase==='reveal'){
     if(S.lastPhase!=='reveal' || room.currentIndex!==S.lastIndex){
-      S.lastIndex = room.currentIndex; S.lastPhase='reveal';
+      S.lastIndex = room.currentIndex; S.lastPhase = 'reveal';
       clearInterval(S.tickTimer);
-      await scoreAndRenderReveal(room);
+      scoreAndRenderReveal(room);
     }
     return;
   }
-
   if(room.phase==='finished'){
     if(S.lastPhase!=='finished'){
-      S.lastPhase='finished';
-      clearInterval(S.pollTimer); clearInterval(S.tickTimer);
+      S.lastPhase = 'finished';
+      clearInterval(S.tickTimer);
       renderPlayerFinal(room);
+    } else {
+      handleBreakStateForPlayer(room);
     }
     return;
   }
+}
+async function leaveRoom(){
+  const sure = confirm('Sair da sala? Você vai perder seu progresso nesse quiz.');
+  if(!sure) return;
+  if(S.playerId) await sDelete(playerKey(S.roomCode, S.playerId));
+  detachPlayerListeners();
+  location.reload();
 }
 
 function renderPlayerQuestion(room){
@@ -878,7 +984,8 @@ function tickPlayerRing(room){
 async function playerAnswer(choice){
   if(S.myPlayer.answers[S.lastIndex]) return;
   document.querySelectorAll('.opt-btn').forEach((b,i)=>{ b.disabled=true; if(i===choice) b.classList.add('chosen'); });
-  const timeMs = Date.now() - ((await sGet(roomKey(S.roomCode)))?.questionStartedAt || Date.now());
+  const startedAt = S.currentRoom?.questionStartedAt || Date.now();
+  const timeMs = Date.now() - startedAt;
   S.myPlayer.answers[S.lastIndex] = {choice, timeMs};
   document.getElementById('pAnswerStatus').textContent = 'Resposta enviada ✓';
   document.getElementById('pAnswerStatus').className = 'status-pill ok';
@@ -936,10 +1043,33 @@ async function renderPlayerFinal(room){
   document.getElementById('pFinalHeadline').textContent = acc>=0.8 ? 'Mandou muito bem! 🏆' : acc>=0.5 ? 'Bom trabalho!' : 'Toda pausa é ganha — valeu por jogar!';
   S.breakTotalSec = minutes*60;
   document.getElementById('breakTime').textContent = fmtTime(S.breakTotalSec);
+
+  const waitMsg = document.getElementById('breakWaitMsg');
+  const btn = document.getElementById('breakStartBtn');
+  btn.style.display = 'none';
+  if(minutes<=0){
+    waitMsg.style.display = '';
+    waitMsg.textContent = 'Sem tempo livre dessa vez — já pode partir pro próximo ciclo de foco.';
+    btn.style.display = '';
+    btn.disabled = false;
+    btn.textContent = 'Iniciar ciclo de foco (25 min)';
+    btn.onclick = startFocusCycle;
+  } else {
+    waitMsg.style.display = '';
+    waitMsg.textContent = 'Aguardando o anfitrião iniciar o tempo livre da turma…';
+  }
   screen('screen-player-final');
 
   const players = await getAllPlayers(S.roomCode);
   document.getElementById('pFinalLeaderboard').innerHTML = renderMinutesLeaderboardHTML(players, total, cfg);
+
+  handleBreakStateForPlayer(room);
+}
+function handleBreakStateForPlayer(room){
+  if(room.breakStartedAt && S.breakStartedNotifiedFor !== room.breakStartedAt && S.breakTotalSec>0){
+    S.breakStartedNotifiedFor = room.breakStartedAt;
+    beginSyncedBreakCountdown(room.breakStartedAt);
+  }
 }
 
 /* ---------------- PLAYER: BREAK TIMER (Pomodoro) ---------------- */
@@ -947,25 +1077,25 @@ function fmtTime(sec){
   const m = Math.floor(sec/60), s = sec%60;
   return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
 }
-function startBreak(){
-  if(S.breakTotalSec<=0){ toast('Sem minutos de pausa desta vez — bora pro próximo ciclo!'); return; }
-  S.breakRemainingSec = S.breakTotalSec;
-  document.getElementById('breakStartBtn').textContent = 'Pausa em andamento…';
-  document.getElementById('breakStartBtn').disabled = true;
+function beginSyncedBreakCountdown(startedAt){
+  const waitMsg = document.getElementById('breakWaitMsg');
+  if(waitMsg) waitMsg.style.display = 'none';
   const ring = document.getElementById('breakRing');
   clearInterval(S.breakTimer);
   const tick = () => {
-    document.getElementById('breakTime').textContent = fmtTime(S.breakRemainingSec);
-    setRing(ring, S.breakRemainingSec/S.breakTotalSec, false);
-    if(S.breakRemainingSec<=0){
+    const elapsed = Math.floor((Date.now()-startedAt)/1000);
+    const remaining = Math.max(0, S.breakTotalSec - elapsed);
+    document.getElementById('breakTime').textContent = fmtTime(remaining);
+    setRing(ring, S.breakTotalSec>0 ? remaining/S.breakTotalSec : 0, false);
+    if(remaining<=0){
       clearInterval(S.breakTimer);
-      document.getElementById('breakStartBtn').disabled = false;
-      document.getElementById('breakStartBtn').textContent = 'Novo ciclo: iniciar foco de 25 min';
-      document.getElementById('breakStartBtn').onclick = startFocusCycle;
       toast('Tempo livre encerrado! Hora de focar de novo 💪');
-      return;
+      const btn = document.getElementById('breakStartBtn');
+      btn.style.display = '';
+      btn.disabled = false;
+      btn.textContent = 'Iniciar novo ciclo de foco (25 min)';
+      btn.onclick = startFocusCycle;
     }
-    S.breakRemainingSec -= 1;
   };
   tick();
   S.breakTimer = setInterval(tick, 1000);
@@ -996,11 +1126,26 @@ function startFocusCycle(){
 }
 
 /* init */
-console.log('🔥 Kahodoro iniciando…');
-console.log('Firebase inicializado?', storageOK());
 if(!storageOK()){
   toast('Aviso: configure o Firebase no início do arquivo para o multiplayer funcionar.', 5000);
 }
+async function cleanupOldRooms(){
+  if(!storageOK()) return;
+  try{
+    const snap = await db.ref('rooms').once('value');
+    if(!snap.exists()) return;
+    const now = Date.now();
+    const updates = {};
+    snap.forEach(child => {
+      const state = child.val() && child.val().state;
+      if(state && state.createdAt && (now-state.createdAt) > 24*60*60*1000){
+        updates[child.key] = null;
+      }
+    });
+    if(Object.keys(updates).length) await db.ref('rooms').update(updates);
+  }catch(e){ console.error('cleanup falhou', e); }
+}
+cleanupOldRooms();
 (function initFromInviteLink(){
   const params = new URLSearchParams(window.location.search);
   const roomFromLink = params.get('room');
